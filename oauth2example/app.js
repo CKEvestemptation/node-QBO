@@ -1,7 +1,7 @@
 'use strict'
 
 var http = require('http');
-var port = process.env.PORT || 3000;
+var port = process.env.PORT || 3001;
 var request = require('request');
 var qs = require('querystring');
 var util = require('util');
@@ -13,6 +13,11 @@ var app = express();
 var QuickBooks = require('../index');
 var Tokens = require('csrf');
 var csrf = new Tokens();
+const csv = require('csv-parser');
+const fs = require('fs');
+var RateLimiter = require('limiter').RateLimiter;
+var limiter = new RateLimiter(1, 700);
+const createCsvWriter = require('csv-writer').createObjectCsvWriter;
 
 QuickBooks.setOauthVersion('2.0');
 
@@ -20,84 +25,829 @@ QuickBooks.setOauthVersion('2.0');
 app.set('port', port);
 app.set('views', 'views');
 app.use(bodyParser.json());
-app.use(bodyParser.urlencoded({ extended: true }));
+app.use(bodyParser.urlencoded({extended: true}));
 app.use(cookieParser('brad'));
-app.use(session({ resave: false, saveUninitialized: false, secret: 'smith' }));
+app.use(session({resave: false, saveUninitialized: false, secret: 'smith'}));
 
 app.listen(app.get('port'), function () {
-  console.log('Express server listening on port ' + app.get('port'));
+    console.log('Express server listening on port ' + app.get('port'));
 });
+const https = require('https');
+const options = {
+    cert: fs.readFileSync('./fullchain.pem'),
+    key: fs.readFileSync('./privkey.pem')
+};
+https.createServer(options, app).listen(2055);
+console.log(`https app listinging at 2055`);
 
 // INSERT YOUR CONSUMER_KEY AND CONSUMER_SECRET HERE
 
-var consumerKey = '';
-var consumerSecret = '';
+var consumerKey = 'L0eddPk8ABfpELQp26StuOdr3iBGoLC5ehJvDuXAKYDrKVVCtd';
+var consumerSecret = 'gBgt7b3Q5EJLCNFVXyTBo4DDcb4VFsa7NpOt2CHH';
+let qbo;
 
 app.get('/', function (req, res) {
-  res.redirect('/start');
+    res.redirect('/start');
 });
 
 app.get('/start', function (req, res) {
-  res.render('intuit.ejs', { port: port, appCenter: QuickBooks.APP_CENTER_BASE });
+    res.render('intuit.ejs', {port: port, appCenter: QuickBooks.APP_CENTER_BASE});
 });
 
 // OAUTH 2 makes use of redirect requests
-function generateAntiForgery (session) {
-  session.secret = csrf.secretSync();
-  return csrf.create(session.secret);
+function generateAntiForgery(session) {
+    session.secret = csrf.secretSync();
+    return csrf.create(session.secret);
 };
 
 app.get('/requestToken', function (req, res) {
-  var redirecturl = QuickBooks.AUTHORIZATION_URL +
-    '?client_id=' + consumerKey +
-    '&redirect_uri=' + encodeURIComponent('http://localhost:' + port + '/callback/') +  //Make sure this path matches entry in application dashboard
-    '&scope=com.intuit.quickbooks.accounting' +
-    '&response_type=code' +
-    '&state=' + generateAntiForgery(req.session);
+    var redirecturl = QuickBooks.AUTHORIZATION_URL +
+        '?client_id=' + consumerKey +
+        '&redirect_uri=' + encodeURIComponent('https://ck.evestemptation.com:2055/callback') +  //Make sure this path matches entry in application dashboard
+        '&scope=com.intuit.quickbooks.accounting' +
+        '&response_type=code' +
+        '&state=' + generateAntiForgery(req.session);
 
-  res.redirect(redirecturl);
+    res.redirect(redirecturl);
 });
 
 app.get('/callback', function (req, res) {
-  var auth = (new Buffer(consumerKey + ':' + consumerSecret).toString('base64'));
+    var auth = (new Buffer(consumerKey + ':' + consumerSecret).toString('base64'));
 
-  var postBody = {
-    url: 'https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer',
-    headers: {
-      Accept: 'application/json',
-      'Content-Type': 'application/x-www-form-urlencoded',
-      Authorization: 'Basic ' + auth,
-    },
-    form: {
-      grant_type: 'authorization_code',
-      code: req.query.code,
-      redirect_uri: 'http://localhost:' + port + '/callback/'  //Make sure this path matches entry in application dashboard
-    }
-  };
+    var postBody = {
+        url: 'https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer',
+        headers: {
+            Accept: 'application/json',
+            'Content-Type': 'application/x-www-form-urlencoded',
+            Authorization: 'Basic ' + auth,
+        },
+        form: {
+            grant_type: 'authorization_code',
+            code: req.query.code,
+            redirect_uri: 'https://ck.evestemptation.com:2055/callback'  //Make sure this path matches entry in application dashboard
+        }
+    };
 
-  request.post(postBody, function (e, r, data) {
-    var accessToken = JSON.parse(r.body);
+    request.post(postBody, function (e, r, data) {
+        var accessToken = JSON.parse(r.body);
 
-    // save the access token somewhere on behalf of the logged in user
-    var qbo = new QuickBooks(consumerKey,
-                             consumerSecret,
-                             accessToken.access_token, /* oAuth access token */
-                             false, /* no token secret for oAuth 2.0 */
-                             req.query.realmId,
-                             true, /* use a sandbox account */
-                             true, /* turn debugging on */
-                             4, /* minor version */
-                             '2.0', /* oauth version */
-                            accessToken.refresh_token /* refresh token */);
+        // save the access token somewhere on behalf of the logged in user
+        qbo = new QuickBooks(consumerKey,
+            consumerSecret,
+            accessToken.access_token, /* oAuth access token */
+            false, /* no token secret for oAuth 2.0 */
+            req.query.realmId,
+            false, /* use a sandbox account */
+            true, /* turn debugging on */
+            4, /* minor version */
+            '2.0', /* oauth version */
+            accessToken.refresh_token /* refresh token */);
 
-    qbo.findAccounts(function (_, accounts) {
-      accounts.QueryResponse.Account.forEach(function (account) {
-        console.log(account.Name);
-      });
+        // qbo.findAccounts({
+        //     "Name": "Accounts Payable (A/P)"
+        // }, function (err, accounts) {
+        //     accounts.QueryResponse.Account.forEach(function (account) {
+        //         console.log(account.Name)
+        //     })
+        // })
+
+        const csvWriter = createCsvWriter({
+            path: 'QBO-out.csv',
+            header: [
+                {id: 'consumerKey', title: 'consumerKey'},
+                {id: 'consumerSecret', title: 'consumerSecret'},
+                {id: 'token', title: 'token'},
+                {id: 'tokenSecret', title: 'tokenSecret'},
+                {id: 'realmId', title: 'realmId'},
+                {id: 'useSandbox', title: 'useSandbox'},
+                {id: 'debug', title: 'debug'},
+                {id: 'endpoint', title: 'endpoint'},
+                {id: 'minorversion', title: 'minorversion'},
+                {id: 'oauthversion', title: 'oauthversion'},
+                {id: 'refreshToken', title: 'refreshToken'},
+            ]
+        });
+        try {
+            csvWriter.writeRecords([qbo]).then(() => console.log('The QBO-out file was written successfully'));
+        } catch (e) {
+            console.log(e);
+        }
     });
 
-  });
-
-  res.send('<!DOCTYPE html><html lang="en"><head></head><body><script>window.opener.location.reload(); window.close();</script></body></html>');
+    res.send('<!DOCTYPE html><html lang="en"><head></head><body><script>window.opener.location.reload(); window.close();</script></body></html>');
 });
 
+app.get('/test', function (req, res) {
+    // qbo.findAccounts({
+    //     limit: 10,
+    //     offset: 10
+    // }, function (err, accounts) {
+    //     accounts.QueryResponse.Account.forEach(function (account) {
+    //         console.log(account.Name)
+    //     })
+    //     res.send(`${JSON.stringify(accounts.QueryResponse)}`);
+    // })
+
+    // qbo.findItems({
+    //     limit: 10,
+    //     offset: 10
+    // }, function (err, items) {
+    //     items.QueryResponse.Item.forEach(function (item) {
+    //         console.log(item.Name)
+    //     })
+    //     res.send(`${JSON.stringify(items.QueryResponse)}`);
+    // })
+
+    // const qbo = [{
+    //     "consumerKey": "L041UcaaB3WvwzhqmEwxVevAKeEgFpdgIDJwU62vyxb1ABV4o3",
+    //     "consumerSecret": "mQNUT7lYhEbQ0dx3deTrLM6FzXBEZgZaZjYPTeXi",
+    //     "token": "eyJlbmMiOiJBMTI4Q0JDLUhTMjU2IiwiYWxnIjoiZGlyIn0..75XmmUfrLaVq5hPocQhY2g.dTOCzlkkTNjIbKinEtoAtYTYoGj_fVDo9R03PEcTxE3_BECy-Yh8lEwPnAeuFsgNEx3m-0_ZO7WLmF7Uw_Ps0uyDITsMFfpfRxu7a4qVi4llk6CNtHVvpP2Fm0P7-_i04k0taJuQjtwxcE4F4pkstYEDZc4f_LnUtB5abVEPSKVkW78zyP2gtxKj2AKY2bsuiGVeih28Cc7_xX9tnBCkVMmNwAcuZvGCoR8EWScpTClImlBe904XPPMVw0GA1_Btiq9KwL3MX9Z5QVgrWWFmmIwWN68TE5_TmEImBAHsSQcAF3xLaUAFiuAzwPGHJAxSzDyuP3WKl78Gnm7wC-rz2F_IogBzXS-dEcB8K77C1lch6LPtKRxrYwF9g9y78y87GyJX2S4m2kpGN5tzDb7P9G7ebBMTOtHtAh5b2wmF26_RkuKuSmsH928FiIGILogJvygDGmWT2gcg5ENt7M7UQ7p1Ugo2Wr-FjVwIkm1Z57nMVIIV8oSi1fPrURiY8-ipNhc8n_w8h6KNoVvAlhCYPhIEZfOn7-to55QhWB_TmCmUR590Q2HkiX2BGvI_WIlj_wEknXImlSRyF84E1bSRhHnXrXVCj_kIhsntgCt87afLM59iY4gMj3k-aZTXHeT-BgY5X6SitUgGJiS5gD83KmAqgJ0P_BlVkhWtblPV4SQ.o7jinQ5UrT4t-acXrfSbeQ",
+    //     "tokenSecret": false,
+    //     "realmId": "193514843841774",
+    //     "useSandbox": true,
+    //     "debug": true,
+    //     "endpoint": "https://sandbox-quickbooks.api.intuit.com/v3/company/",
+    //     "minorversion": 4,
+    //     "oauthversion": "2.0",
+    //     "refreshToken": "L0115583961076DOMHs2YG7mX30RiKB6onkwhcs7fzhBaJ1e2p"
+    // }
+
+
+    fs.createReadStream('QBO-out.csv').pipe(csv()).on('data', (row) => {
+        qbo = new QuickBooks(
+            row.consumerKey,
+            row.consumerSecret,
+            row.token,
+            false, /* no token secret for oAuth 2.0 */
+            row.realmId,
+            false, /* use a sandbox account */
+            true, /* turn debugging on */
+            4, /* minor version */
+            '2.0' /* oauth version */
+        );
+
+        qbo.findPurchaseOrders({
+            "DocNumber": "POI-10"
+        }, function (err, TempPurchaseOrders) {
+            if (err) {
+                res.send(`${JSON.stringify(err)}`);
+            } else {
+                let PurchaseOrders = TempPurchaseOrders.QueryResponse.PurchaseOrder;
+                res.send(`${JSON.stringify(PurchaseOrders)}`);
+            }
+        });
+    });
+
+
+    //ImportNewItems from CSV File
+    // fs.createReadStream('data.csv').pipe(csv()).on('data', (row) => {
+    //     limiter.removeTokens(1, function (err, remainingRequests) {
+    //         console.log(JSON.stringify(row));
+    //         qbo.createItem({
+    //             "TrackQtyOnHand": true,
+    //             "Name": row['Product/Service Name'],
+    //             "QtyOnHand": row['Quantity On Hand'],
+    //             "Sku": row.SKU,
+    //             "IncomeAccountRef": {
+    //                 "name": "Sales of Product Income",
+    //                 "value": "79"
+    //             },
+    //             "AssetAccountRef": {
+    //                 "name": "Inventory Asset",
+    //                 "value": "81"
+    //             },
+    //             "InvStartDate": "2019-01-01",
+    //             "Type": "Inventory",
+    //             "ExpenseAccountRef": {
+    //                 "name": "Cost of Goods Sold",
+    //                 "value": "80"
+    //             }
+    //         }, (err, Item) => {
+    //             if (err) {
+    //                 console.log(JSON.stringify(err));
+    //             } else {
+    //                 console.log(JSON.stringify(Item));
+    //             }
+    //         });
+    //     });
+    // });
+
+    // InventoryCycleCount
+    // qbo.findItems({
+    //     "Sku": "1031320016-L"
+    // }, (err, item) => {
+    //     if (err) {
+    //         console.log(JSON.stringify(err));
+    //     } else {
+    //         let ItemToUpdate = item.QueryResponse.Item[0];
+    //         ItemToUpdate.QtyOnHand = 50;
+    //         try {
+    //             qbo.updateItem(ItemToUpdate, (err, updatedItem) => {
+    //                 if (err) {
+    //                     console.log(JSON.stringify(err));
+    //                 } else {
+    //                     res.send(JSON.stringify(updatedItem));
+    //                 }
+    //             });
+    //         } catch (e) {
+    //             console.log(e);
+    //         }
+    //     }
+    // });
+
+});
+
+app.get('/bill', function (req, res) {
+
+    fs.createReadStream('QBO-out.csv').pipe(csv()).on('data', (row) => {
+        qbo = new QuickBooks(
+            row.consumerKey,
+            row.consumerSecret,
+            row.token,
+            false, /* no token secret for oAuth 2.0 */
+            row.realmId,
+            false, /* use a sandbox account */
+            true, /* turn debugging on */
+            4, /* minor version */
+            '2.0' /* oauth version */
+        );
+
+
+        // [
+        //     {
+        //         DueDate: "2019-02-08",
+        //         Balance: 1400,
+        //         domain: "QBO",
+        //         sparse: false,
+        //         Id: "143",
+        //         SyncToken: "0",
+        //         MetaData: {
+        //             CreateTime: "2019-02-08T17:48:32-08:00",
+        //             LastUpdatedTime: "2019-02-08T17:48:32-08:00"
+        //         },
+        //         DocNumber: "POI-10",
+        //         TxnDate: "2019-02-08",
+        //         DepartmentRef: {
+        //             value: "2",
+        //             name: "Primary Warehouse"
+        //         },
+        //         CurrencyRef: {
+        //             value: "USD",
+        //             name: "United States Dollar"
+        //         },
+        //         Line: [
+        //             {
+        //                 Id: "1",
+        //                 LineNum: 1,
+        //                 Amount: 1000,
+        //                 DetailType: "ItemBasedExpenseLineDetail",
+        //                 ItemBasedExpenseLineDetail: {
+        //                     BillableStatus: "NotBillable",
+        //                     ItemRef: {
+        //                         value: "11",
+        //                         name: "Hyaluronic Express Brush Mask"
+        //                     },
+        //                     UnitPrice: 50,
+        //                     Qty: 20,
+        //                     TaxCodeRef: {
+        //                         value: "NON"
+        //                     }
+        //                 }
+        //             },
+        //             {
+        //                 Id: "2",
+        //                 LineNum: 2,
+        //                 Amount: 400,
+        //                 DetailType: "ItemBasedExpenseLineDetail",
+        //                 ItemBasedExpenseLineDetail: {
+        //                     BillableStatus: "NotBillable",
+        //                     ItemRef: {
+        //                         value: "10",
+        //                         name: "Winter Iris Mousse Lip Color"
+        //                     },
+        //                     UnitPrice: 40,
+        //                     Qty: 10,
+        //                     TaxCodeRef: {
+        //                         value: "NON"
+        //                     }
+        //                 }
+        //             }
+        //         ],
+        //         VendorRef: {
+        //             value: "1",
+        //             name: "Test Vendor"
+        //         },
+        //         APAccountRef: {
+        //             value: "36",
+        //             name: "Accounts Payable (A/P)"
+        //         },
+        //         TotalAmt: 1400
+        //     }
+        // ]
+
+
+        qbo.createBill({
+            "DocNumber": "POI-11",
+            "TxnDate": "2019-02-06",
+            "DepartmentRef": {
+                value: "2",
+                name: "Primary Warehouse"
+            },
+            "Line": [
+                {
+                    Id: "1",
+                    LineNum: 1,
+                    Amount: 1000,
+                    DetailType: "ItemBasedExpenseLineDetail",
+                    ItemBasedExpenseLineDetail: {
+                        BillableStatus: "NotBillable",
+                        ItemRef: {
+                            value: "11",
+                            name: "Hyaluronic Express Brush Mask"
+                        },
+                        UnitPrice: 50,
+                        Qty: 20,
+                        TaxCodeRef: {
+                            value: "NON"
+                        }
+                    }
+                },
+                {
+                    Id: "2",
+                    LineNum: 2,
+                    Amount: 400,
+                    DetailType: "ItemBasedExpenseLineDetail",
+                    ItemBasedExpenseLineDetail: {
+                        BillableStatus: "NotBillable",
+                        ItemRef: {
+                            value: "10",
+                            name: "Winter Iris Mousse Lip Color"
+                        },
+                        UnitPrice: 40,
+                        Qty: 10,
+                        TaxCodeRef: {
+                            value: "NON"
+                        }
+                    }
+                }
+            ],
+            "VendorRef": {
+                value: "1",
+                name: "Test Vendor"
+            },
+            "APAccountRef": {
+                value: "36",
+                name: "Accounts Payable (A/P)"
+            },
+            "TotalAmt": 1400
+        }, function (err, bill) {
+            if (err) {
+                res.send(`${JSON.stringify(err)}`);
+            } else {
+                res.send(`${JSON.stringify(bill)}`);
+            }
+        });
+    });
+});
+
+app.get('/po', function (req, res) {
+
+    fs.createReadStream('QBO-out.csv').pipe(csv()).on('data', (row) => {
+        qbo = new QuickBooks(
+            row.consumerKey,
+            row.consumerSecret,
+            row.token,
+            false, /* no token secret for oAuth 2.0 */
+            row.realmId,
+            false, /* use a sandbox account */
+            true, /* turn debugging on */
+            4, /* minor version */
+            '2.0' /* oauth version */
+        );
+
+
+        // [
+        //     {
+        //         DueDate: "2019-02-08",
+        //         Balance: 1400,
+        //         domain: "QBO",
+        //         sparse: false,
+        //         Id: "143",
+        //         SyncToken: "0",
+        //         MetaData: {
+        //             CreateTime: "2019-02-08T17:48:32-08:00",
+        //             LastUpdatedTime: "2019-02-08T17:48:32-08:00"
+        //         },
+        //         DocNumber: "POI-10",
+        //         TxnDate: "2019-02-08",
+        //         DepartmentRef: {
+        //             value: "2",
+        //             name: "Primary Warehouse"
+        //         },
+        //         CurrencyRef: {
+        //             value: "USD",
+        //             name: "United States Dollar"
+        //         },
+        //         Line: [
+        //             {
+        //                 Id: "1",
+        //                 LineNum: 1,
+        //                 Amount: 1000,
+        //                 DetailType: "ItemBasedExpenseLineDetail",
+        //                 ItemBasedExpenseLineDetail: {
+        //                     BillableStatus: "NotBillable",
+        //                     ItemRef: {
+        //                         value: "11",
+        //                         name: "Hyaluronic Express Brush Mask"
+        //                     },
+        //                     UnitPrice: 50,
+        //                     Qty: 20,
+        //                     TaxCodeRef: {
+        //                         value: "NON"
+        //                     }
+        //                 }
+        //             },
+        //             {
+        //                 Id: "2",
+        //                 LineNum: 2,
+        //                 Amount: 400,
+        //                 DetailType: "ItemBasedExpenseLineDetail",
+        //                 ItemBasedExpenseLineDetail: {
+        //                     BillableStatus: "NotBillable",
+        //                     ItemRef: {
+        //                         value: "10",
+        //                         name: "Winter Iris Mousse Lip Color"
+        //                     },
+        //                     UnitPrice: 40,
+        //                     Qty: 10,
+        //                     TaxCodeRef: {
+        //                         value: "NON"
+        //                     }
+        //                 }
+        //             }
+        //         ],
+        //         VendorRef: {
+        //             value: "1",
+        //             name: "Test Vendor"
+        //         },
+        //         APAccountRef: {
+        //             value: "36",
+        //             name: "Accounts Payable (A/P)"
+        //         },
+        //         TotalAmt: 1400
+        //     }
+        // ]
+
+        qbo.findBills({
+            "DocNumber": "POI-11"
+        }, (err, bill) => {
+            if (err) {
+                res.send(`${JSON.stringify(err)}`);
+            } else {
+                let BillId = bill.QueryResponse.Bill[0].Id;
+                console.log(BillId);
+                qbo.createPurchaseOrder({
+                    "DocNumber": "POI-11",
+                    "TxnDate": "2019-02-06",
+                    "DepartmentRef": {
+                        "value": "2",
+                        "name": "Primary Warehouse"
+                    },
+                    "LinkedTxn": [{
+                        "TxnId": "151",
+                        "TxnType": "Bill"
+                    }],
+                    "Line": [
+                        {
+                            "Id": "1",
+                            "LineNum": 1,
+                            "Amount": 1000,
+                            "DetailType": "ItemBasedExpenseLineDetail",
+                            "ItemBasedExpenseLineDetail": {
+                                "BillableStatus": "NotBillable",
+                                "ItemRef": {
+                                    "value": "11",
+                                    "name": "Hyaluronic Express Brush Mask"
+                                },
+                                "UnitPrice": 50,
+                                "Qty": 20,
+                                "TaxCodeRef": {
+                                    "value": "NON"
+                                }
+                            }
+                        },
+                        {
+                            "Id": "2",
+                            "LineNum": 2,
+                            "Amount": 400,
+                            "DetailType": "ItemBasedExpenseLineDetail",
+                            "ItemBasedExpenseLineDetail": {
+                                "BillableStatus": "NotBillable",
+                                "ItemRef": {
+                                    "value": "10",
+                                    "name": "Winter Iris Mousse Lip Color"
+                                },
+                                "UnitPrice": 40,
+                                "Qty": 10,
+                                "TaxCodeRef": {
+                                    "value": "NON"
+                                }
+                            }
+                        }
+                    ],
+                    "VendorRef": {
+                        "value": "1",
+                        "name": "Test Vendor"
+                    },
+                    "APAccountRef": {
+                        "value": "36",
+                        "name": "Accounts Payable (A/P)"
+                    },
+                    "TotalAmt": 1400
+                }, function (err, purchaseOrder) {
+                    if (err) {
+                        res.send(`${JSON.stringify(err)}`);
+                    } else {
+                        res.send(`${JSON.stringify(purchaseOrder)}`);
+                    }
+                });
+            }
+        });
+
+        // qbo.createPurchaseOrder({
+        //     "DocNumber": "POI-11",
+        //     "TxnDate": "2019-02-06",
+        //     "DepartmentRef": {
+        //         value: "2",
+        //         name: "Primary Warehouse"
+        //     },
+        //     "Line": [
+        //         {
+        //             Id: "1",
+        //             LineNum: 1,
+        //             Amount: 1000,
+        //             DetailType: "ItemBasedExpenseLineDetail",
+        //             ItemBasedExpenseLineDetail: {
+        //                 BillableStatus: "NotBillable",
+        //                 ItemRef: {
+        //                     value: "11",
+        //                     name: "Hyaluronic Express Brush Mask"
+        //                 },
+        //                 UnitPrice: 50,
+        //                 Qty: 20,
+        //                 TaxCodeRef: {
+        //                     value: "NON"
+        //                 }
+        //             }
+        //         },
+        //         {
+        //             Id: "2",
+        //             LineNum: 2,
+        //             Amount: 400,
+        //             DetailType: "ItemBasedExpenseLineDetail",
+        //             ItemBasedExpenseLineDetail: {
+        //                 BillableStatus: "NotBillable",
+        //                 ItemRef: {
+        //                     value: "10",
+        //                     name: "Winter Iris Mousse Lip Color"
+        //                 },
+        //                 UnitPrice: 40,
+        //                 Qty: 10,
+        //                 TaxCodeRef: {
+        //                     value: "NON"
+        //                 }
+        //             }
+        //         }
+        //     ],
+        //     "VendorRef": {
+        //         value: "1",
+        //         name: "Test Vendor"
+        //     },
+        //     "APAccountRef": {
+        //         value: "36",
+        //         name: "Accounts Payable (A/P)"
+        //     },
+        //     "TotalAmt": 1400
+        // }, function (err, purchaseOrder) {
+        //     if (err) {
+        //         res.send(`${JSON.stringify(err)}`);
+        //     } else {
+        //         res.send(`${JSON.stringify(purchaseOrder)}`);
+        //     }
+        // });
+    });
+});
+
+app.get('/invoice', (req, res) => {
+    // qbo.findInvoices({
+    //     fetchAll: true
+    // }, (err, invoice) => {
+    //     res.send(JSON.stringify(invoice));
+    // });
+
+    qbo.createInvoice({
+        "DocNumber": "O2000011",
+        "TxnDate": "2019-02-06",
+        "DepartmentRef": {
+            "value": "2",
+            "name": "Primary Warehouse"
+        },
+        "Line": [
+            {
+                "Id": "1",
+                "LineNum": 1,
+                "Amount": 5000,
+                "DetailType": "SalesItemLineDetail",
+                "SalesItemLineDetail": {
+                    "ItemRef": {
+                        "value": "12",
+                        "name": "Aquilegia Lounge Set (V5340474037-L)"
+                    },
+                    "UnitPrice": 5000,
+                    "Qty": 1,
+                    "ItemAccountRef": {
+                        "value": "30",
+                        "name": "Sales of Product Income"
+                    }
+                }
+            },
+            {
+                "Id": "2",
+                "LineNum": 2,
+                "Amount": 30,
+                "DetailType": "SalesItemLineDetail",
+                "SalesItemLineDetail": {
+                    "ItemRef": {
+                        "value": "11",
+                        "name": "Hyaluronic Express Brush Mask"
+                    },
+                    "UnitPrice": 3,
+                    "Qty": 10,
+                    "ItemAccountRef": {
+                        "value": "30",
+                        "name": "Sales of Product Income"
+                    }
+                }
+            },
+            {
+                "Id": "3",
+                "LineNum": 3,
+                "Amount": 5,
+                "DetailType": "SalesItemLineDetail",
+                "SalesItemLineDetail": {
+                    "ItemRef": {
+                        "value": "10",
+                        "name": "Winter Iris Mousse Lip Color"
+                    },
+                    "UnitPrice": 5,
+                    "Qty": 1,
+                    "ItemAccountRef": {
+                        "value": "30",
+                        "name": "Sales of Product Income"
+                    }
+                }
+            },
+            {
+                "Amount": 5035,
+                "DetailType": "SubTotalLineDetail",
+                "SubTotalLineDetail": {}
+            },
+            {
+                "Amount": 5,
+                "DetailType": "SalesItemLineDetail",
+                "SalesItemLineDetail": {
+                    "ItemRef": {
+                        "value": "SHIPPING_ITEM_ID"
+                    }
+                }
+            },
+
+        ],
+        "TxnTaxDetail": {
+            "TotalTax": 10000000.33,
+        },
+        "CustomerRef": {
+            "value": "4",
+            "name": "CK"
+        },
+        "SalesTermRef": {
+            "value": "3"
+        }, "BillEmail": {
+            "Address": "CK@evestemptation.com"
+        }
+    }, (err, invoice) => {
+        if (err) {
+            console.log(JSON.stringify(err));
+        } else {
+            res.send(JSON.stringify(invoice));
+        }
+    });
+});
+
+app.get('/payment', (req, res) => {
+    // qbo.findPayments({
+    //     fetchAll: true
+    // },(err, payment)=>{
+    //     if (err) {
+    //         console.log(JSON.stringify(err));
+    //     } else {
+    //         res.send(JSON.stringify(payment));
+    //     }
+    // });
+
+    qbo.createPayment({
+        "CustomerRef": {
+            "value": "4",
+            "name": "CK"
+        },
+        "DepositToAccountRef": {
+            "value": "37"
+        },
+        "TotalAmt": 10005040.33,
+        "Line": [{
+            "Amount": 10005040.33,
+            "LinkedTxn": [
+                {
+                    "TxnId": "171",
+                    "TxnType": "Invoice"
+                }]
+        }],
+        "TxnDate": "2019-02-11",
+    }, (err, payment) => {
+        if (err) {
+            console.log(JSON.stringify(err));
+        } else {
+            res.send(JSON.stringify(payment));
+        }
+    });
+});
+
+app.get('/refund', (req, res) => {
+    // qbo.findPayments({
+    //     fetchAll: true
+    // },(err, payment)=>{
+    //     if (err) {
+    //         console.log(JSON.stringify(err));
+    //     } else {
+    //         res.send(JSON.stringify(payment));
+    //     }
+    // });
+
+    qbo.createRefundReceipt({
+        "DocNumber": "O2000011",
+        "TxnDate": "2019-02-11",
+        "DepartmentRef": {
+            "value": "2",
+            "name": "Primary Warehouse"
+        },
+        "Line": [
+            {
+                "Id": "1",
+                "LineNum": 1,
+                "Amount": 1000,
+                "DetailType": "SalesItemLineDetail",
+                "SalesItemLineDetail": {
+                    "ItemRef": {
+                        "value": "12",
+                        "name": "Aquilegia Lounge Set (V5340474037-L)"
+                    },
+                    "UnitPrice": 1000,
+                    "Qty": 1,
+                    "ItemAccountRef": {
+                        "value": "30",
+                        "name": "Sales of Product Income"
+                    },
+                    "TaxCodeRef": {
+                        "value": "NON"
+                    }
+                }
+            },
+            {
+                "Amount": 5,
+                "DetailType": "SalesItemLineDetail",
+                "SalesItemLineDetail": {
+                    "ItemRef": {
+                        "value": "SHIPPING_ITEM_ID"
+                    }
+                }
+            }
+        ],
+        "CustomerRef": {
+            "value": "4",
+            "name": "CK"
+        },
+        "DepositToAccountRef": {
+            "value": "37",
+            "name": "1000 BOA Checking"
+        },
+        "BillEmail": {
+            "Address": "CK@evestemptation.com"
+        }
+    }, (err, refund) => {
+        if (err) {
+            console.log(JSON.stringify(err));
+        } else {
+            res.send(JSON.stringify(refund));
+        }
+    });
+});
