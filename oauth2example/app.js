@@ -16,7 +16,7 @@ var csrf = new Tokens();
 const csv = require('csv-parser');
 const fs = require('fs');
 var RateLimiter = require('limiter').RateLimiter;
-var limiter = new RateLimiter(1, 700);
+var limiter = new RateLimiter(1, 1000);
 const createCsvWriter = require('csv-writer').createObjectCsvWriter;
 
 QuickBooks.setOauthVersion('2.0');
@@ -42,8 +42,8 @@ console.log(`https app listinging at 2055`);
 
 // INSERT YOUR CONSUMER_KEY AND CONSUMER_SECRET HERE
 
-var consumerKey = 'L0eddPk8ABfpELQp26StuOdr3iBGoLC5ehJvDuXAKYDrKVVCtd';
-var consumerSecret = 'gBgt7b3Q5EJLCNFVXyTBo4DDcb4VFsa7NpOt2CHH';
+var consumerKey = 'Q0medGU96jopiYEvZO3kPWD7TDsC0M1AIiTT984vcttMSUDxiP';
+var consumerSecret = '94RTGwwbluu8QRS9I2zcK4wKNDGZwOk0E2oayiCM';
 let qbo;
 
 app.get('/', function (req, res) {
@@ -102,14 +102,6 @@ app.get('/callback', function (req, res) {
             4, /* minor version */
             '2.0', /* oauth version */
             accessToken.refresh_token /* refresh token */);
-
-        // qbo.findAccounts({
-        //     "Name": "Accounts Payable (A/P)"
-        // }, function (err, accounts) {
-        //     accounts.QueryResponse.Account.forEach(function (account) {
-        //         console.log(account.Name)
-        //     })
-        // })
 
         const csvWriter = createCsvWriter({
             path: 'QBO-out.csv',
@@ -179,7 +171,7 @@ app.get('/test', function (req, res) {
             row.consumerSecret,
             row.token,
             false, /* no token secret for oAuth 2.0 */
-            row.realmId,
+            row.realmId, /*realmId*/
             false, /* use a sandbox account */
             true, /* turn debugging on */
             4, /* minor version */
@@ -255,6 +247,151 @@ app.get('/test', function (req, res) {
     //     }
     // });
 
+});
+
+app.get('/item', (req, res) => {
+    let totalItemNum = 39;
+    let importedItemNum = 0;
+    let ErrorMessages = [];
+    let FailedItemWriter = createCsvWriter({
+        path: 'FailedItem.csv',
+        header: [
+            {id: 'SKU',title: 'SKU'},
+            {id: 'message', title: 'message'}
+        ]
+    });
+    // Authorization
+    fs.createReadStream('QBO-out.csv').pipe(csv()).on('data', (row) => {
+        qbo = new QuickBooks(
+            row.consumerKey,
+            row.consumerSecret,
+            row.token,
+            false, /* no token secret for oAuth 2.0 */
+            row.realmId,
+            false, /* use a sandbox account */
+            false, /* turn debugging on */
+            4, /* minor version */
+            '2.0', /* oauth version */
+            row.refreshToken
+        );
+    });
+
+    //ImportNewItems from CSV File
+    fs.createReadStream('data.csv').pipe(csv()).on('data', (row) => {
+        limiter.removeTokens(1, function (err, remainingRequests) {
+            //console.log(JSON.stringify(row));
+            try {
+                qbo.createItem({
+                    "TrackQtyOnHand": true,
+                    "Name": row['Product/Service Name'],
+                    "QtyOnHand": row['Quantity On Hand'],
+                    "Sku": row.SKU,
+                    "IncomeAccountRef": {
+                        "name": "Sales of Product Income",
+                        "value": "34"
+                    },
+                    "AssetAccountRef": {
+                        "name": "Inventory Asset",
+                        "value": "35"
+                    },
+                    "InvStartDate": "2019-01-01",
+                    "Type": "Inventory",
+                    "ExpenseAccountRef": {
+                        "name": "Cost of Goods Sold",
+                        "value": "26"
+                    },
+                    "PurchaseCost": row['Purchase Cost']
+                }, (err, Item) => {
+                    if (err) {
+                        importedItemNum += 1;
+                        let ErrorMessage = {
+                            SKU: row.SKU,
+                            message: `Unable to create the ${importedItemNum} Item: ${row['Product/Service Name']}. Error: ${JSON.stringify(err)}`
+                        };
+                        ErrorMessages.push(ErrorMessage);
+                        // if (err.Fault.Error[0].code !== '6240') {
+                        //     console.log(ErrorMessage);
+                        // }
+                        console.log(`Imported ${importedItemNum} item(s). Error: ${JSON.stringify(ErrorMessage)}`);
+                    } else {
+                        importedItemNum += 1;
+                        console.log(`Imported ${importedItemNum} item(s).`);
+                    }
+
+                    qbo.refreshAccessToken((e, refreshresponse)=>{
+                        //console.log(refreshresponse);
+                    });
+                    if (importedItemNum === totalItemNum) {
+                        console.log(`Imported All Items!`);
+                        try {
+                            FailedItemWriter.writeRecords(ErrorMessages).then(() => {
+                                console.log(`FailedItem reported!`);
+                            });
+                        } catch (e) {
+                            console.log(e);
+                        }
+                    }
+                });
+            } catch (e) {
+                console.log(`Cannot create Item(s). Error message: ${e}`);
+            }
+        });
+    });
+
+    res.send(`Start importing items!`);
+});
+
+app.get('/allitems', (req, res) => {
+    let SKUs = [];
+    let SKUNum = 0;
+    let AllItemsWriter = createCsvWriter({
+        path: 'AllItems.csv',
+        header: [
+            {id: 'SKU',title: 'SKU'}
+        ]
+    });
+
+    // Authorization
+    fs.createReadStream('QBO-out.csv').pipe(csv()).on('data', (row) => {
+        qbo = new QuickBooks(
+            row.consumerKey,
+            row.consumerSecret,
+            row.token,
+            false, /* no token secret for oAuth 2.0 */
+            row.realmId,
+            false, /* use a sandbox account */
+            false, /* turn debugging on */
+            4, /* minor version */
+            '2.0', /* oauth version */
+            row.refreshToken
+        );
+    });
+
+    qbo.findItems({
+        fetchAll: true
+    },(err, items)=>{
+        if (err){
+            console.log(JSON.stringify(err));
+        } else {
+            items.QueryResponse.Item.forEach((item)=>{
+                SKUNum += 1;
+                SKUs.push({SKU: item.Name});
+                console.log(`The ${SKUNum} item is written!`);
+            });
+        }
+        if (SKUNum === items.QueryResponse.maxResults){
+            console.log(`Exported All Items!`);
+            try {
+                AllItemsWriter.writeRecords(SKUs).then(() => {
+                    console.log(`AllItemsCsv exported!`);
+                });
+            } catch (e) {
+                console.log(e);
+            }
+        }
+    });
+
+    res.send(`Exporting All Items`);
 });
 
 app.get('/bill', function (req, res) {
