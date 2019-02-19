@@ -224,28 +224,28 @@ app.get('/test', function (req, res) {
     //     });
     // });
 
-    // InventoryCycleCount
-    // qbo.findItems({
-    //     "Sku": "1031320016-L"
-    // }, (err, item) => {
-    //     if (err) {
-    //         console.log(JSON.stringify(err));
-    //     } else {
-    //         let ItemToUpdate = item.QueryResponse.Item[0];
-    //         ItemToUpdate.QtyOnHand = 50;
-    //         try {
-    //             qbo.updateItem(ItemToUpdate, (err, updatedItem) => {
-    //                 if (err) {
-    //                     console.log(JSON.stringify(err));
-    //                 } else {
-    //                     res.send(JSON.stringify(updatedItem));
-    //                 }
-    //             });
-    //         } catch (e) {
-    //             console.log(e);
-    //         }
-    //     }
-    // });
+    InventoryCycleCount
+    qbo.findItems({
+        "Sku": "1031320016-L"
+    }, (err, item) => {
+        if (err) {
+            console.log(JSON.stringify(err));
+        } else {
+            let ItemToUpdate = item.QueryResponse.Item[0];
+            ItemToUpdate.QtyOnHand = 50;
+            try {
+                qbo.updateItem(ItemToUpdate, (err, updatedItem) => {
+                    if (err) {
+                        console.log(JSON.stringify(err));
+                    } else {
+                        res.send(JSON.stringify(updatedItem));
+                    }
+                });
+            } catch (e) {
+                console.log(e);
+            }
+        }
+    });
 
 });
 
@@ -256,7 +256,7 @@ app.get('/item', (req, res) => {
     let FailedItemWriter = createCsvWriter({
         path: 'FailedItem.csv',
         header: [
-            {id: 'SKU',title: 'SKU'},
+            {id: 'SKU', title: 'SKU'},
             {id: 'message', title: 'message'}
         ]
     });
@@ -318,7 +318,7 @@ app.get('/item', (req, res) => {
                         console.log(`Imported ${importedItemNum} item(s).`);
                     }
 
-                    qbo.refreshAccessToken((e, refreshresponse)=>{
+                    qbo.refreshAccessToken((e, refreshresponse) => {
                         //console.log(refreshresponse);
                     });
                     if (importedItemNum === totalItemNum) {
@@ -347,7 +347,9 @@ app.get('/allitems', (req, res) => {
     let AllItemsWriter = createCsvWriter({
         path: 'AllItems.csv',
         header: [
-            {id: 'SKU',title: 'SKU'}
+            {id: 'SKU', title: 'SKU'},
+            {id: 'name', title: 'name'},
+            {id: 'Id', title: 'Id'}
         ]
     });
 
@@ -365,30 +367,40 @@ app.get('/allitems', (req, res) => {
             '2.0', /* oauth version */
             row.refreshToken
         );
-    });
 
-    qbo.findItems({
-        fetchAll: true
-    },(err, items)=>{
-        if (err){
-            console.log(JSON.stringify(err));
-        } else {
-            items.QueryResponse.Item.forEach((item)=>{
-                SKUNum += 1;
-                SKUs.push({SKU: item.Name});
-                console.log(`The ${SKUNum} item is written!`);
-            });
-        }
-        if (SKUNum === items.QueryResponse.maxResults){
-            console.log(`Exported All Items!`);
-            try {
-                AllItemsWriter.writeRecords(SKUs).then(() => {
-                    console.log(`AllItemsCsv exported!`);
-                });
-            } catch (e) {
+        qbo.refreshAccessToken((e, refreshResponse) => {
+            if (e) {
                 console.log(e);
+            } else {
+                qbo.findItems({
+                    fetchAll: true
+                }, (err, items) => {
+                    if (err) {
+                        console.log(JSON.stringify(err));
+                    } else {
+                        items.QueryResponse.Item.forEach((item) => {
+                            SKUNum += 1;
+                            SKUs.push({
+                                SKU: item.Sku,
+                                name: item.Name,
+                                Id: item.Id
+                            });
+                            console.log(`The ${SKUNum} item is written!`);
+                        });
+                    }
+                    if (SKUNum === items.QueryResponse.maxResults) {
+                        console.log(`Exported All Items!`);
+                        try {
+                            AllItemsWriter.writeRecords(SKUs).then(() => {
+                                console.log(`AllItemsCsv exported!`);
+                            });
+                        } catch (e) {
+                            console.log(e);
+                        }
+                    }
+                });
             }
-        }
+        });
     });
 
     res.send(`Exporting All Items`);
@@ -635,81 +647,76 @@ app.get('/po', function (req, res) {
         //     }
         // ]
 
-        qbo.findBills({
-            "DocNumber": "POI-11"
-        }, (err, bill) => {
+        // qbo.findBills({
+        //     "DocNumber": "POI-11"
+        // }, (err, bill) => {
+        //     if (err) {
+        //         res.send(`${JSON.stringify(err)}`);
+        //     } else {
+        //         let BillId = bill.QueryResponse.Bill[0].Id;
+        //         console.log(BillId);
+
+        // Push to QBO: POI Verified -> Completed
+        qbo.createPurchaseOrder({
+            "DocNumber": "POI-10", // Receipt Id
+            "TxnDate": "2019-02-06", // Verified -> Completed Date
+            "DepartmentRef": {
+                "value": "1",
+                "name": "Primary Warehouse"  // Receiving Location
+            },
+            "Line": [
+                {
+                    "LineNum": 1,
+                    "Amount": 60,  // Adj. Unit Cost * Processed Qty.
+                    "DetailType": "ItemBasedExpenseLineDetail",
+                    "ItemBasedExpenseLineDetail": {
+                        "BillableStatus": "NotBillable",
+                        "ItemRef": {
+                            "value": "22280",
+                            "name": "Abbigail Boyshort Hiphuggers (D1405230343-2XL)"
+                        },
+                        "UnitPrice": 60,  // Adj. Unit Cost
+                        "Qty": 1,  // Processed Qty.
+                        "TaxCodeRef": {
+                            "value": "NON"
+                        }
+                    }
+                },
+                {
+                    "LineNum": 2,
+                    "Amount": 80,
+                    "DetailType": "ItemBasedExpenseLineDetail",
+                    "ItemBasedExpenseLineDetail": {
+                        "BillableStatus": "NotBillable",
+                        "ItemRef": {
+                            "value": "18029",
+                            "name": "Abbigail Boyshort Hiphuggers (D1405230343-L)"
+                        },
+                        "UnitPrice": 80,
+                        "Qty": 1,
+                        "TaxCodeRef": {
+                            "value": "NON"
+                        }
+                    }
+                }
+            ],
+            "VendorRef": {
+                "value": "5",
+                "name": "Vic Top"
+            },
+            "APAccountRef": {
+                "value": "42",
+                "name": "Accounts Payable (A/P)"
+            },
+        }, function (err, purchaseOrder) {
             if (err) {
                 res.send(`${JSON.stringify(err)}`);
             } else {
-                let BillId = bill.QueryResponse.Bill[0].Id;
-                console.log(BillId);
-                qbo.createPurchaseOrder({
-                    "DocNumber": "POI-11",
-                    "TxnDate": "2019-02-06",
-                    "DepartmentRef": {
-                        "value": "2",
-                        "name": "Primary Warehouse"
-                    },
-                    "LinkedTxn": [{
-                        "TxnId": "151",
-                        "TxnType": "Bill"
-                    }],
-                    "Line": [
-                        {
-                            "Id": "1",
-                            "LineNum": 1,
-                            "Amount": 1000,
-                            "DetailType": "ItemBasedExpenseLineDetail",
-                            "ItemBasedExpenseLineDetail": {
-                                "BillableStatus": "NotBillable",
-                                "ItemRef": {
-                                    "value": "11",
-                                    "name": "Hyaluronic Express Brush Mask"
-                                },
-                                "UnitPrice": 50,
-                                "Qty": 20,
-                                "TaxCodeRef": {
-                                    "value": "NON"
-                                }
-                            }
-                        },
-                        {
-                            "Id": "2",
-                            "LineNum": 2,
-                            "Amount": 400,
-                            "DetailType": "ItemBasedExpenseLineDetail",
-                            "ItemBasedExpenseLineDetail": {
-                                "BillableStatus": "NotBillable",
-                                "ItemRef": {
-                                    "value": "10",
-                                    "name": "Winter Iris Mousse Lip Color"
-                                },
-                                "UnitPrice": 40,
-                                "Qty": 10,
-                                "TaxCodeRef": {
-                                    "value": "NON"
-                                }
-                            }
-                        }
-                    ],
-                    "VendorRef": {
-                        "value": "1",
-                        "name": "Test Vendor"
-                    },
-                    "APAccountRef": {
-                        "value": "36",
-                        "name": "Accounts Payable (A/P)"
-                    },
-                    "TotalAmt": 1400
-                }, function (err, purchaseOrder) {
-                    if (err) {
-                        res.send(`${JSON.stringify(err)}`);
-                    } else {
-                        res.send(`${JSON.stringify(purchaseOrder)}`);
-                    }
-                });
+                res.send(`${JSON.stringify(purchaseOrder)}`);
             }
         });
+        //     }
+        // });
 
         // qbo.createPurchaseOrder({
         //     "DocNumber": "POI-11",
@@ -783,74 +790,60 @@ app.get('/invoice', (req, res) => {
     // });
 
     qbo.createInvoice({
-        "DocNumber": "O2000011",
+        "DocNumber": "O2000013",
         "TxnDate": "2019-02-06",
         "DepartmentRef": {
-            "value": "2",
+            "value": "1",
             "name": "Primary Warehouse"
         },
         "Line": [
             {
-                "Id": "1",
                 "LineNum": 1,
-                "Amount": 5000,
+                "Amount": 10,
                 "DetailType": "SalesItemLineDetail",
                 "SalesItemLineDetail": {
                     "ItemRef": {
-                        "value": "12",
-                        "name": "Aquilegia Lounge Set (V5340474037-L)"
+                        "value": "20940",
+                        "name": "3-in-1 Matte Velveteen Tint - Holiday (H530496J8037-30)"
                     },
-                    "UnitPrice": 5000,
+                    "UnitPrice": 10,  // Refund Price
                     "Qty": 1,
                     "ItemAccountRef": {
-                        "value": "30",
+                        "value": "34",
                         "name": "Sales of Product Income"
+                    },
+                    "TaxCodeRef": {
+                        "value": "Tax"
                     }
                 }
             },
             {
-                "Id": "2",
                 "LineNum": 2,
-                "Amount": 30,
+                "Amount": 50,
                 "DetailType": "SalesItemLineDetail",
                 "SalesItemLineDetail": {
                     "ItemRef": {
-                        "value": "11",
-                        "name": "Hyaluronic Express Brush Mask"
+                        "value": "20940",
+                        "name": "3-in-1 Matte Velveteen Tint - Holiday (H530496J8037-30)"
                     },
-                    "UnitPrice": 3,
-                    "Qty": 10,
-                    "ItemAccountRef": {
-                        "value": "30",
-                        "name": "Sales of Product Income"
-                    }
-                }
-            },
-            {
-                "Id": "3",
-                "LineNum": 3,
-                "Amount": 5,
-                "DetailType": "SalesItemLineDetail",
-                "SalesItemLineDetail": {
-                    "ItemRef": {
-                        "value": "10",
-                        "name": "Winter Iris Mousse Lip Color"
-                    },
-                    "UnitPrice": 5,
+                    "UnitPrice": 50,
                     "Qty": 1,
                     "ItemAccountRef": {
-                        "value": "30",
+                        "value": "34",
                         "name": "Sales of Product Income"
+                    },
+                    "TaxCodeRef": {
+                        "value": "Tax"
                     }
                 }
             },
             {
-                "Amount": 5035,
+                "Amount": 60, //SubtotalAfterDiscount
                 "DetailType": "SubTotalLineDetail",
                 "SubTotalLineDetail": {}
             },
             {
-                "Amount": 5,
+                "Amount": 5,  // Shipping Fee
                 "DetailType": "SalesItemLineDetail",
                 "SalesItemLineDetail": {
                     "ItemRef": {
@@ -861,16 +854,17 @@ app.get('/invoice', (req, res) => {
 
         ],
         "TxnTaxDetail": {
-            "TotalTax": 10000000.33,
+            "TotalTax": 80,
         },
         "CustomerRef": {
-            "value": "4",
-            "name": "CK"
+            "value": "1",
+            "name": "Official Site Customer"
         },
         "SalesTermRef": {
-            "value": "3"
-        }, "BillEmail": {
-            "Address": "CK@evestemptation.com"
+            "value": "1"
+        },
+        "BillEmail": {
+            "Address": "ck@evestemptation.com"
         }
     }, (err, invoice) => {
         if (err) {
@@ -892,31 +886,192 @@ app.get('/payment', (req, res) => {
     //     }
     // });
 
-    qbo.createPayment({
-        "CustomerRef": {
-            "value": "4",
-            "name": "CK"
-        },
-        "DepositToAccountRef": {
-            "value": "37"
-        },
-        "TotalAmt": 10005040.33,
-        "Line": [{
-            "Amount": 10005040.33,
-            "LinkedTxn": [
-                {
-                    "TxnId": "171",
-                    "TxnType": "Invoice"
-                }]
-        }],
-        "TxnDate": "2019-02-11",
-    }, (err, payment) => {
-        if (err) {
-            console.log(JSON.stringify(err));
-        } else {
-            res.send(JSON.stringify(payment));
-        }
+    fs.createReadStream('QBO-out.csv').pipe(csv()).on('data', (row) => {
+        qbo = new QuickBooks(
+            row.consumerKey,
+            row.consumerSecret,
+            row.token,
+            false, /* no token secret for oAuth 2.0 */
+            row.realmId,
+            false, /* use a sandbox account */
+            false, /* turn debugging on */
+            4, /* minor version */
+            '2.0', /* oauth version */
+            row.refreshToken
+        );
+
+        qbo.refreshAccessToken((e, refreshResponse) => {
+            if (e) {
+                console.log(e);
+            } else {
+                qbo.createPayment({
+                    "CustomerRef": {
+                        "value": "1",
+                        "name": "Official Site Customer"
+                    },
+                    "DepositToAccountRef": {
+                        "value": "32"
+                    },
+                    "PaymentMethodRef": {
+                        "value": "3"
+                        // "PaymentMethod": [
+                        //     {
+                        //         "Name": "AliPay",
+                        //         "Active": true,
+                        //         "Type": "NON_CREDIT_CARD",
+                        //         "domain": "QBO",
+                        //         "sparse": false,
+                        //         "Id": "7",
+                        //         "SyncToken": "0",
+                        //         "MetaData": {
+                        //             "CreateTime": "2019-02-18T17:00:26-08:00",
+                        //             "LastUpdatedTime": "2019-02-18T17:00:26-08:00"
+                        //         }
+                        //     },
+                        //     {
+                        //         "Name": "Braintree Credit Card",
+                        //         "Active": true,
+                        //         "Type": "CREDIT_CARD",
+                        //         "domain": "QBO",
+                        //         "sparse": false,
+                        //         "Id": "3",
+                        //         "SyncToken": "1",
+                        //         "MetaData": {
+                        //             "CreateTime": "2019-02-12T10:12:18-08:00",
+                        //             "LastUpdatedTime": "2019-02-18T16:53:04-08:00"
+                        //         }
+                        //     },
+                        //     {
+                        //         "Name": "Braintree Paypal",
+                        //         "Active": true,
+                        //         "Type": "NON_CREDIT_CARD",
+                        //         "domain": "QBO",
+                        //         "sparse": false,
+                        //         "Id": "5",
+                        //         "SyncToken": "0",
+                        //         "MetaData": {
+                        //             "CreateTime": "2019-02-18T17:00:01-08:00",
+                        //             "LastUpdatedTime": "2019-02-18T17:00:01-08:00"
+                        //         }
+                        //     },
+                        //     {
+                        //         "Name": "Cash",
+                        //         "Active": true,
+                        //         "Type": "NON_CREDIT_CARD",
+                        //         "domain": "QBO",
+                        //         "sparse": false,
+                        //         "Id": "1",
+                        //         "SyncToken": "0",
+                        //         "MetaData": {
+                        //             "CreateTime": "2019-02-12T10:12:18-08:00",
+                        //             "LastUpdatedTime": "2019-02-12T10:12:18-08:00"
+                        //         }
+                        //     },
+                        //     {
+                        //         "Name": "Check",
+                        //         "Active": true,
+                        //         "Type": "NON_CREDIT_CARD",
+                        //         "domain": "QBO",
+                        //         "sparse": false,
+                        //         "Id": "2",
+                        //         "SyncToken": "0",
+                        //         "MetaData": {
+                        //             "CreateTime": "2019-02-12T10:12:18-08:00",
+                        //             "LastUpdatedTime": "2019-02-12T10:12:18-08:00"
+                        //         }
+                        //     },
+                        //     {
+                        //         "Name": "Square",
+                        //         "Active": true,
+                        //         "Type": "NON_CREDIT_CARD",
+                        //         "domain": "QBO",
+                        //         "sparse": false,
+                        //         "Id": "4",
+                        //         "SyncToken": "0",
+                        //         "MetaData": {
+                        //             "CreateTime": "2019-02-18T16:59:13-08:00",
+                        //             "LastUpdatedTime": "2019-02-18T16:59:13-08:00"
+                        //         }
+                        //     },
+                        //     {
+                        //         "Name": "WechatPay",
+                        //         "Active": true,
+                        //         "Type": "NON_CREDIT_CARD",
+                        //         "domain": "QBO",
+                        //         "sparse": false,
+                        //         "Id": "6",
+                        //         "SyncToken": "0",
+                        //         "MetaData": {
+                        //             "CreateTime": "2019-02-18T17:00:17-08:00",
+                        //             "LastUpdatedTime": "2019-02-18T17:00:17-08:00"
+                        //         }
+                        //     }
+                    },
+                    "TotalAmt": 145,
+                    "Line": [{
+                        "Amount": 145,
+                        "LinkedTxn": [
+                            {
+                                "TxnId": "30627",
+                                "TxnType": "Invoice"
+                            }]
+                    }],
+                    "TxnDate": "2019-02-11",
+                }, (err, payment) => {
+                    if (err) {
+                        console.log(JSON.stringify(err));
+                    } else {
+                        res.send(JSON.stringify(payment));
+                    }
+                });
+            }
+        });
     });
+
+});
+
+app.get('/paymentmethod', (req, res) => {
+    fs.createReadStream('QBO-out.csv').pipe(csv()).on('data', (row) => {
+        qbo = new QuickBooks(
+            row.consumerKey,
+            row.consumerSecret,
+            row.token,
+            false, /* no token secret for oAuth 2.0 */
+            row.realmId,
+            false, /* use a sandbox account */
+            false, /* turn debugging on */
+            4, /* minor version */
+            '2.0', /* oauth version */
+            row.refreshToken
+        );
+
+        qbo.refreshAccessToken((e, refreshResponse) => {
+            if (e) {
+                console.log(e);
+            } else {
+                console.log(refreshResponse);
+                qbo.findPaymentMethods({
+                    "Name": "Credit Card"
+                }, (err, paymentMethod) => {
+                    if (err) {
+                        console.log(JSON.stringify(err));
+                    } else {
+                        let PaymentMethodToUpdate = paymentMethod.QueryResponse.PaymentMethod[0];
+                        PaymentMethodToUpdate.Name = "Braintree Credit Card";
+                        qbo.updatePaymentMethod(PaymentMethodToUpdate, (err, paymentMethod) => {
+                            if (err) {
+                                console.log(err);
+                            } else {
+                                res.send(JSON.stringify(paymentMethod));
+                            }
+                        });
+                    }
+                });
+            }
+        });
+    });
+
+
 });
 
 app.get('/refund', (req, res) => {
@@ -930,61 +1085,113 @@ app.get('/refund', (req, res) => {
     //     }
     // });
 
-    qbo.createRefundReceipt({
-        "DocNumber": "O2000011",
-        "TxnDate": "2019-02-11",
-        "DepartmentRef": {
-            "value": "2",
-            "name": "Primary Warehouse"
-        },
-        "Line": [
-            {
-                "Id": "1",
-                "LineNum": 1,
-                "Amount": 1000,
-                "DetailType": "SalesItemLineDetail",
-                "SalesItemLineDetail": {
-                    "ItemRef": {
-                        "value": "12",
-                        "name": "Aquilegia Lounge Set (V5340474037-L)"
+    fs.createReadStream('QBO-out.csv').pipe(csv()).on('data', (row) => {
+        qbo = new QuickBooks(
+            row.consumerKey,
+            row.consumerSecret,
+            row.token,
+            false, /* no token secret for oAuth 2.0 */
+            row.realmId,
+            false, /* use a sandbox account */
+            false, /* turn debugging on */
+            4, /* minor version */
+            '2.0', /* oauth version */
+            row.refreshToken
+        );
+
+        qbo.refreshAccessToken((e, refreshResponse) => {
+            if (e) {
+                console.log(e);
+            } else {
+                qbo.createRefundReceipt({
+                    "DocNumber": "O2000012",
+                    "TxnDate": "2019-02-11",
+                    "DepartmentRef": {
+                        "value": "1",
+                        "name": "Primary Warehouse"
                     },
-                    "UnitPrice": 1000,
-                    "Qty": 1,
-                    "ItemAccountRef": {
-                        "value": "30",
-                        "name": "Sales of Product Income"
+                    "Line": [
+                        {
+                            "LineNum": 1,
+                            "Amount": 10,
+                            "DetailType": "SalesItemLineDetail",
+                            "SalesItemLineDetail": {
+                                "ItemRef": {
+                                    "value": "20940",
+                                    "name": "3-in-1 Matte Velveteen Tint - Holiday (H530496J8037-30)"
+                                },
+                                "UnitPrice": 10,
+                                "Qty": 1,
+                                "ItemAccountRef": {
+                                    "value": "34",
+                                    "name": "Sales of Product Income"
+                                },
+                                "TaxCodeRef": {
+                                    "value": "TAX"
+                                }
+                            }
+                        },
+                        {
+                            "LineNum": 2,
+                            "Amount": 50,
+                            "DetailType": "SalesItemLineDetail",
+                            "SalesItemLineDetail": {
+                                "ItemRef": {
+                                    "value": "20940",
+                                    "name": "3-in-1 Matte Velveteen Tint - Holiday (H530496J8037-30)"
+                                },
+                                "UnitPrice": 50,
+                                "Qty": 1,
+                                "ItemAccountRef": {
+                                    "value": "34",
+                                    "name": "Sales of Product Income"
+                                },
+                                "TaxCodeRef": {
+                                    "value": "TAX"
+                                }
+                            }
+                        },
+                        {
+                            "Amount": 60,
+                            "DetailType": "SubTotalLineDetail",
+                            "SubTotalLineDetail": {}
+                        },
+                        {
+                            "Amount": 5,
+                            "DetailType": "SalesItemLineDetail",
+                            "SalesItemLineDetail": {
+                                "ItemRef": {
+                                    "value": "SHIPPING_ITEM_ID"
+                                }
+                            }
+                        }
+                    ],
+                    "TxnTaxDetail": {
+                        "TotalTax": 80
                     },
-                    "TaxCodeRef": {
-                        "value": "NON"
+                    "CustomerRef": {
+                        "value": "1",
+                        "name": "Official Site Customer"
+                    },
+                    "PaymentMethodRef": {
+                        "value": "3",
+                        "name": "Braintree Credit Card"
+                    },
+                    "DepositToAccountRef": {
+                        "value": "32",
+                        "name": "1000 JEM BOA Checking"
+                    },
+                    "BillEmail": {
+                        "Address": "CK@evestemptation.com"
                     }
-                }
-            },
-            {
-                "Amount": 5,
-                "DetailType": "SalesItemLineDetail",
-                "SalesItemLineDetail": {
-                    "ItemRef": {
-                        "value": "SHIPPING_ITEM_ID"
+                }, (err, refund) => {
+                    if (err) {
+                        console.log(JSON.stringify(err));
+                    } else {
+                        res.send(JSON.stringify(refund));
                     }
-                }
+                });
             }
-        ],
-        "CustomerRef": {
-            "value": "4",
-            "name": "CK"
-        },
-        "DepositToAccountRef": {
-            "value": "37",
-            "name": "1000 BOA Checking"
-        },
-        "BillEmail": {
-            "Address": "CK@evestemptation.com"
-        }
-    }, (err, refund) => {
-        if (err) {
-            console.log(JSON.stringify(err));
-        } else {
-            res.send(JSON.stringify(refund));
-        }
+        });
     });
 });
